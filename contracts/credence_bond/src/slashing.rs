@@ -48,16 +48,17 @@ pub fn get_slashed_amount(e: &Env, bond_identity: &Address) -> i128 {
 /// * `e` - Soroban environment
 /// * `caller` - Address to validate as admin
 ///
-/// # Panics
-/// If caller is not the stored admin address with message "not admin"
+/// # Errors
+/// - `ContractError::NotInitialized` if contract not initialized
+/// - `ContractError::NotAdmin` if caller is not the stored admin address
 pub fn validate_admin(e: &Env, caller: &Address) {
     let stored_admin: Address = e
         .storage()
         .instance()
         .get(&crate::DataKey::Admin)
-        .unwrap_or_else(|| panic!("not initialized"));
+        .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
     if caller != &stored_admin {
-        panic!("not admin");
+        panic_with_error!(e, ContractError::NotAdmin);
     }
 }
 
@@ -108,7 +109,7 @@ pub(crate) fn apply_slash(
 ) -> crate::IdentityBond {
     // Step 1: Reject zero/negative slash amounts before any state access
     if amount <= 0 {
-        panic!("slash amount must be positive");
+        panic_with_error!(e, ContractError::AmountMustBePositive);
     }
 
     // Step 2: Same-ledger liquidation guard
@@ -120,7 +121,7 @@ pub(crate) fn apply_slash(
         .storage()
         .instance()
         .get::<_, crate::IdentityBond>(&key)
-        .unwrap_or_else(|| panic!("no bond"));
+        .unwrap_or_else(|| panic_with_error!(e, ContractError::BondNotFound));
 
     // Check that bond is active
     if !bond.active {
@@ -133,7 +134,7 @@ pub(crate) fn apply_slash(
     // only catches i128 overflow. A `slashed_amount` that exceeds
     // `bonded_amount` is corrupt state, not a subtraction to wrap around.
     if bond.slashed_amount > bond.bonded_amount {
-        panic!("slashed exceeds bonded");
+        panic_with_error!(e, ContractError::InvariantViolation);
     }
     let available = bond.bonded_amount - bond.slashed_amount;
 
@@ -147,7 +148,7 @@ pub(crate) fn apply_slash(
     // This is also stricter than checking against `bonded_amount` alone: a second
     // slash cannot exceed what is actually withdrawable after prior slashes.
     if amount > available {
-        panic!("slash exceeds bond");
+        panic_with_error!(e, ContractError::SlashExceedsBond);
     }
 
     // `amount` is validated; it equals the actual slash applied.
@@ -156,7 +157,7 @@ pub(crate) fn apply_slash(
     let new_slashed = bond
         .slashed_amount
         .checked_add(actual_slash_amount)
-        .expect("slashing caused overflow");
+        .unwrap_or_else(|| panic_with_error!(e, ContractError::Overflow));
 
     // Invariant: slashed_amount must never exceed bonded_amount (guaranteed by check above)
     debug_assert!(
@@ -317,7 +318,7 @@ pub fn unslash_bond(
     amount: i128,
 ) -> crate::IdentityBond {
     if amount < 0 {
-        panic!("unslash amount must be non-negative");
+        panic_with_error!(e, ContractError::AmountMustBePositive);
     }
     validate_admin(e, admin);
 
@@ -326,7 +327,7 @@ pub fn unslash_bond(
         .storage()
         .instance()
         .get::<_, crate::IdentityBond>(&key)
-        .unwrap_or_else(|| panic!("no bond"));
+        .unwrap_or_else(|| panic_with_error!(e, ContractError::BondNotFound));
 
     // Guard on the *value*, not on arithmetic overflow: `checked_sub` only
     // reports an i128 overflow, and a negative result (e.g. 400 - 500 = -100)
@@ -335,7 +336,7 @@ pub fn unslash_bond(
     // to `bonded - slashed > bonded`, letting a withdrawal pay out more than
     // the contract holds. Reject the out-of-range amount explicitly.
     if amount > bond.slashed_amount {
-        panic!("unslashing would reduce below 0");
+        panic_with_error!(e, ContractError::Underflow);
     }
     bond.slashed_amount -= amount;
 
@@ -416,7 +417,7 @@ fn transfer_slashed_funds_to_treasury(e: &Env, amount: i128) {
         .storage()
         .instance()
         .get(&crate::DataKey::BondToken)
-        .unwrap_or_else(|| panic!("token not configured"));
+        .unwrap_or_else(|| panic_with_error!(e, ContractError::TreasuryNotConfigured));
     let contract = e.current_contract_address();
     soroban_sdk::token::TokenClient::new(e, &token_addr).transfer(&contract, &treasury, &amount);
 }

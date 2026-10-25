@@ -309,6 +309,7 @@ dependencies = [
 name = "bounty-escrow"
 version = "0.1.0"
 dependencies = [
+ "credence_errors",
  "soroban-sdk",
 ]
 
